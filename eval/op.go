@@ -112,6 +112,9 @@ func binOp(op token.Token, x, y interface{}) (interface{}, error) {
 			switch y := y.(type) {
 			case float64:
 				return x + y, nil
+			case UntypedFloat:
+				yf, _ := y.Float64()
+				return x + yf, nil
 			}
 		case complex64:
 			switch y := y.(type) {
@@ -122,15 +125,27 @@ func binOp(op token.Token, x, y interface{}) (interface{}, error) {
 			switch y := y.(type) {
 			case complex128:
 				return x + y, nil
+			case UntypedInt:
+				return x + complex(float64(y.Int64()), 0), nil
 			}
 		case UntypedInt:
 			switch y := y.(type) {
-			case UntypedFloat:
-				z := big.NewFloat(float64(x.Int.Int64()))
-				return UntypedFloat{z.Add(z, y.Float)}, nil
 			case UntypedInt:
 				z := big.NewInt(0)
 				return UntypedInt{z.Add(x.Int, y.Int)}, nil
+			case UntypedFloat:
+				z := big.NewFloat(float64(x.Int.Int64()))
+				return UntypedFloat{z.Add(z, y.Float)}, nil
+			case UntypedComplex:
+				re := big.NewFloat(float64(x.Int.Int64()))
+				im := big.NewFloat(0)
+				return UntypedComplex{re.Add(re, y.Real), im.Add(im, y.Imag)}, nil
+			case float64:
+				return float64(x.Int64()) + y, nil
+			case complex64:
+				return complex(float32(x.Int64()), 0) + y, nil
+			case complex128:
+				return complex(float64(x.Int64()), 0) + y, nil
 			}
 		case UntypedFloat:
 			z := big.NewFloat(0)
@@ -140,6 +155,22 @@ func binOp(op token.Token, x, y interface{}) (interface{}, error) {
 				return UntypedFloat{z.Add(z, x.Float)}, nil
 			case UntypedFloat:
 				return UntypedFloat{z.Add(x.Float, y.Float)}, nil
+			case UntypedComplex:
+				re := big.NewFloat(0)
+				im := big.NewFloat(0)
+				return UntypedComplex{re.Add(x.Float, y.Real), im.Add(im, y.Imag)}, nil
+			case float32:
+				v, _ := x.Float32()
+				return v + y, nil
+			case float64:
+				v, _ := x.Float64()
+				return v + y, nil
+			case complex64:
+				v, _ := x.Float32()
+				return complex(v, 0) + y, nil
+			case complex128:
+				v, _ := x.Float64()
+				return complex(v, 0) + y, nil
 			}
 		case UntypedComplex:
 			re := big.NewFloat(0)
@@ -156,6 +187,14 @@ func binOp(op token.Token, x, y interface{}) (interface{}, error) {
 					Real: re.Add(x.Real, y.Real),
 					Imag: im.Add(x.Imag, y.Imag),
 				}, nil
+			case complex64:
+				re, _ := x.Real.Float32()
+				im, _ := x.Imag.Float32()
+				return complex(re, im) + y, nil
+			case complex128:
+				re, _ := x.Real.Float64()
+				im, _ := x.Imag.Float64()
+				return complex(re, im) + y, nil
 			}
 		case UntypedString:
 			switch y := y.(type) {
@@ -378,6 +417,43 @@ func binOp(op token.Token, x, y interface{}) (interface{}, error) {
 			case *big.Float:
 				z := big.NewFloat(0)
 				return z.Mul(x, y), nil
+			}
+		case UntypedInt:
+			switch y := y.(type) {
+			case UntypedFloat:
+				z := big.NewFloat(0)
+				xf := big.NewFloat(float64(x.Int.Int64()))
+				return UntypedFloat{z.Mul(xf, y.Float)}, nil
+			case UntypedInt:
+				z := big.NewInt(0)
+				return UntypedInt{z.Mul(x.Int, y.Int)}, nil
+			case UntypedComplex:
+				re := big.NewFloat(0)
+				xf := big.NewFloat(float64(x.Int.Int64()))
+				im := big.NewFloat(0)
+				return UntypedComplex{re.Mul(xf, y.Real), im.Mul(im, y.Imag)}, nil
+			case complex64:
+				return complex(float32(x.Int64()), 0) * y, nil
+			case complex128:
+				return complex(float64(x.Int64()), 0) * y, nil
+			}
+		case UntypedComplex:
+			re := big.NewFloat(0)
+			im := big.NewFloat(0)
+			switch y := y.(type) {
+			case UntypedInt:
+				yre := big.NewFloat(0)
+				yre.SetInt(y.Int)
+				return UntypedComplex{re.Mul(x.Real, yre), im}, nil
+			case UntypedFloat:
+				yre := big.NewFloat(0)
+				yre.Set(y.Float)
+				return UntypedComplex{re.Mul(x.Real, yre), im}, nil
+			case UntypedComplex:
+				return UntypedComplex{
+					re.Sub(x.Real, y.Real),
+					im.Sub(x.Imag, y.Imag),
+				}, nil
 			}
 		}
 	case token.Div:
