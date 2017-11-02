@@ -914,6 +914,9 @@ func convert(v reflect.Value, t reflect.Type) reflect.Value {
 			res := UntypedComplex{new(big.Float), new(big.Float)}
 			res.Real.SetInt64(val.Int64())
 			return reflect.ValueOf(res)
+		case reflect.TypeOf((*big.Float)(nil)):
+			res := big.NewFloat(0).SetInt(val.Int)
+			return reflect.ValueOf(res)
 		}
 		ret := reflect.New(t).Elem()
 		switch t.Kind() {
@@ -934,6 +937,9 @@ func convert(v reflect.Value, t reflect.Type) reflect.Value {
 		case reflect.TypeOf(UntypedComplex{}):
 			res := UntypedComplex{new(big.Float), new(big.Float)}
 			res.Real.Set(val.Float)
+			return reflect.ValueOf(res)
+		case reflect.TypeOf((*big.Float)(nil)):
+			res := big.NewFloat(0).Set(val.Float)
 			return reflect.ValueOf(res)
 		}
 		ret := reflect.New(t).Elem()
