@@ -1949,12 +1949,18 @@ func (r *reflector) toRType(t tipe.Type) reflect.Type {
 				path = "mat" // TODO: remove "mat" exception
 			}
 			v := gowrap.Pkgs[path].Exports[t.Name]
-			if typ, isType := v.Interface().(reflect.Type); isType {
-				rtype = typ
-			} else if _, isIface := tipe.Underlying(t).(*tipe.Interface); isIface {
-				rtype = v.Type().Elem()
-			} else {
-				rtype = v.Type()
+			switch {
+			case v.IsValid():
+				if typ, isType := v.Interface().(reflect.Type); isType {
+					rtype = typ
+				} else if _, isIface := tipe.Underlying(t).(*tipe.Interface); isIface {
+					rtype = v.Type().Elem()
+				} else {
+					rtype = v.Type()
+				}
+			default:
+				// FIXME: this is an unexported type.
+				// rtype = reflect.TypeOf((*interface{})(nil)).Elem()
 			}
 		} else {
 			rtype = r.toRType(t.Type)
@@ -1983,6 +1989,8 @@ func (r *reflector) toRType(t tipe.Type) reflect.Type {
 		rtype = reflect.ChanOf(dir, r.toRType(t.Elem))
 	case *tipe.Map:
 		rtype = reflect.MapOf(r.toRType(t.Key), r.toRType(t.Value))
+	case *tipe.Unresolved:
+		panic("unresolved")
 	// TODO case *Interface:
 	// TODO need more reflect support, MakeInterface
 	// TODO needs reflect.InterfaceOf
