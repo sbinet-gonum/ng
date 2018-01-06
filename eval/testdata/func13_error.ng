@@ -1,0 +1,10 @@
+func f(i int) (v int) {
+	if i == 42 {
+		v := 3
+		v++
+		if v == 4 {
+			return // ERROR: v is shadowed during return
+		}
+	}
+	return
+}
