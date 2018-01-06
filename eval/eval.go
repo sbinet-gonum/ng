@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -45,8 +46,10 @@ type Scope struct {
 
 	Label bool
 
-	fct    string     // function name if this is a function scope
-	defers []deferCtx // LIFO-list of defers to run
+	fct       string     // function name if this is a function scope
+	defers    []deferCtx // LIFO-list of defers to run
+	panicking bool       // whether this function is in the middle of a panic
+	panic     interface{}
 }
 
 func (s *Scope) Lookup(name string) reflect.Value {
@@ -70,6 +73,22 @@ func (s *Scope) funcScope() *Scope {
 type deferCtx struct {
 	Func reflect.Value
 	Args []reflect.Value
+}
+
+func (d deferCtx) run(s *Scope) {
+	var ok bool
+	defer func() {
+		log.Printf("defer'd defer: ok=%v", ok)
+		if ok {
+			return
+		}
+		// deferred call panicked
+		s.panicking = true
+		s.panic = recover()
+		log.Printf("defer panicked: %v %T", s.panic, s.panic)
+	}()
+	d.Func.Call(d.Args)
+	ok = true
 }
 
 type Program struct {
@@ -165,11 +184,31 @@ func New(path string, shellState *shell.State) *Program {
 		return reflect.ValueOf(c).Cap()
 	})
 	addUniverse("panic", func(c interface{}) {
+		log.Printf("--> panic! %v %T", c, c)
 		c = promoteUntyped(c)
 		panic(Panic{c})
 	})
 	addUniverse("recover", func() interface{} {
-		return recover()
+		log.Printf("ng.recover...")
+		err := recover()
+		log.Printf("ng.recover... %v %T", err, err)
+		if err == nil {
+			return nil
+		}
+		switch err := err.(type) {
+		case Panic:
+			// panics initiated by ng code are wrapped in an eval.Panic
+			// return the unwrapped value.
+			return err.val
+		default:
+			// this is not a panic we are supposed to intercept.
+			// bubble up
+			//
+			// if msg != "houston" {
+			//	panic("ERROR 2")
+			//
+			panic(err)
+		}
 	})
 	addUniverse("close", func(ch interface{}) {
 		rv := reflect.ValueOf(ch)
@@ -469,6 +508,7 @@ func (p *Program) Eval(s stmt.Stmt, sigint <-chan os.Signal) (res []reflect.Valu
 			err = p.reason
 			return
 		case Panic:
+			log.Printf("caught: %v %T", p, p)
 			err = p
 			return
 		default:
@@ -1857,16 +1897,42 @@ func (p *Program) evalFuncLiteral(e *expr.FuncLiteral, recvt *tipe.Named) reflec
 		if fscope.defers != nil {
 			fscope.defers = fscope.defers[:0]
 		}
+		fscope.panicking = false
+		fscope.panic = nil
+
+		defer func() {
+			log.Printf("running defers... %d", len(fscope.defers))
+			for i := len(fscope.defers) - 1; i >= 0; i-- {
+				d := fscope.defers[i]
+				d.run(fscope)
+			}
+			log.Printf("running defers... [done]")
+			if fscope.panicking {
+				log.Printf("still panicking: %v %T", fscope.panic, fscope.panic)
+				panic(Panic{fscope.panic})
+			}
+		}()
+		defer func() {
+			log.Printf("--- panic ? ---")
+			err := recover()
+			log.Printf(">>> err=%v %T", err, err)
+			if err != nil {
+				switch err := err.(type) {
+				case Panic:
+					fscope.panicking = true
+					fscope.panic = err.val
+				default:
+					debug.PrintStack()
+					panic(err)
+				}
+			}
+		}()
 
 		resValues := p.evalStmt(e.Body.(*stmt.Block))
 		for i, v := range resValues {
 			res[i].Set(v)
 		}
 
-		for i := len(fscope.defers) - 1; i >= 0; i-- {
-			d := fscope.defers[i]
-			d.Func.Call(d.Args)
-		}
 		return res
 	})
 	return fn

@@ -1,0 +1,29 @@
+recovered := false
+msg := ""
+
+func f() {
+	printf(">>> f...\n")
+	defer func() {
+		printf("defer in f()...\n")
+		err := recover()
+		printf("defer in f()... %v\n", err)
+		if err != nil {
+			recovered = true
+			msg = err.(string)
+		}
+	}()
+	printf("<<< f...\n")
+	panic("houston")
+}
+
+f()
+
+if !recovered {
+	panic("ERROR 1")
+}
+
+if msg != "houston" {
+	panic("ERROR 2")
+}
+
+print("OK")
