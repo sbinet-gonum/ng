@@ -53,7 +53,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sideshowdave7/gomq/zmtp"
+	"github.com/go-zeromq/zmq4/zmtp"
+	"github.com/go-zeromq/zmq4/zmtp/security/null"
 	"neugram.io/ng/ngcore"
 )
 
@@ -79,7 +80,7 @@ func Run(ctx context.Context, connFile string) error {
 		cancel:  cancel,
 		neugram: ngcore.New(),
 		key:     []byte(info.Key),
-		iopubs:  make(map[chan [][]byte]struct{}),
+		iopubs:  make(map[chan zmtp.Msg]struct{}),
 	}
 
 	if err := s.shellListener(info.Transport, info.IP, info.ShellPort); err != nil {
@@ -105,7 +106,7 @@ const debug = false
 
 type conn struct {
 	conn net.Conn
-	zmtp *zmtp.Connection
+	zmtp *zmtp.Conn
 }
 
 type server struct {
@@ -115,7 +116,7 @@ type server struct {
 	key     []byte
 
 	mu     sync.Mutex
-	iopubs map[chan [][]byte]struct{}
+	iopubs map[chan zmtp.Msg]struct{}
 }
 
 func (s *server) shellListener(transport, ip string, port int) error {
@@ -130,8 +131,7 @@ func (s *server) shellListener(transport, ip string, port int) error {
 				log.Printf("jupyter: shell listener exiting: %v", err)
 				return
 			}
-			zmtpConn := zmtp.NewConnection(netConn)
-			_, err = zmtpConn.Prepare(new(zmtp.SecurityNull), zmtp.RouterSocketType, "", true, nil)
+			zmtpConn, err := zmtp.Open(netConn, null.Security(), zmtp.Router, nil, true)
 			if err != nil {
 				log.Printf("jupyter: failed prepare shell socket ROUTER: %v", err)
 				netConn.Close()
@@ -156,8 +156,7 @@ func (s *server) ctlListener(transport, ip string, port int) error {
 				log.Printf("jupyter: control listener exiting: %v", err)
 				return
 			}
-			zmtpConn := zmtp.NewConnection(netConn)
-			_, err = zmtpConn.Prepare(new(zmtp.SecurityNull), zmtp.RouterSocketType, "", true, nil)
+			zmtpConn, err := zmtp.Open(netConn, null.Security(), zmtp.Router, nil, true)
 			if err != nil {
 				log.Printf("jupyter: failed prepare control socket ROUTER: %v", err)
 				netConn.Close()
@@ -182,8 +181,7 @@ func (s *server) iopubListener(transport, ip string, port int) error {
 				log.Printf("jupyter: iopub listener exiting: %v", err)
 				return
 			}
-			zmtpConn := zmtp.NewConnection(netConn)
-			_, err = zmtpConn.Prepare(new(zmtp.SecurityNull), zmtp.PubSocketType, "", true, nil)
+			zmtpConn, err := zmtp.Open(netConn, null.Security(), zmtp.Pub, nil, true)
 			if err != nil {
 				log.Printf("jupyter: failed prepare iopub socket PUB: %v", err)
 				netConn.Close()
@@ -200,30 +198,22 @@ func (s *server) shellHandler(c *conn) {
 	if debug {
 		log.Printf("shell handler started\n")
 	}
-	ch := make(chan *zmtp.Message)
-	c.zmtp.Recv(ch)
 	for {
-		zmsg := <-ch
-		switch zmsg.MessageType {
-		case zmtp.UserMessage:
-			var msg message
-			if err := msg.decode(zmsg.Body); err != nil {
-				log.Printf("jupyter: shell msg: %v", err)
-				continue
-			}
-			s.shellRequest(c, &msg)
-		case zmtp.CommandMessage:
-			log.Printf("TODO shell cmd msg body=\n") // TODO
-			for _, b := range zmsg.Body {
-				log.Printf("\t%s\n", b)
-			}
-		case zmtp.ErrorMessage:
-			if zmsg.Err == io.EOF {
+		zmsg, err := c.zmtp.RecvMsg()
+		if err != nil {
+			if err == io.EOF {
 				c.conn.Close()
 				return
 			}
-			log.Printf("shell err msg: %v\n", zmsg.Err)
+			log.Printf("shell err msg: %v\n", err)
+			continue
 		}
+		var msg message
+		if err := msg.decode(zmsg.Frames); err != nil {
+			log.Printf("jupyter: shell msg: %v", err)
+			continue
+		}
+		s.shellRequest(c, &msg)
 	}
 }
 
@@ -231,35 +221,27 @@ func (s *server) ctlHandler(c *conn) {
 	if debug {
 		log.Printf("control handler started\n")
 	}
-	ch := make(chan *zmtp.Message)
-	c.zmtp.Recv(ch)
 	for {
-		zmsg := <-ch
-		switch zmsg.MessageType {
-		case zmtp.UserMessage:
-			var msg message
-			if err := msg.decode(zmsg.Body); err != nil {
-				log.Printf("jupyter: control msg: %v", err)
-				continue
-			}
-			s.shellRequest(c, &msg)
-		case zmtp.CommandMessage:
-			log.Printf("TODO control cmd msg body=\n") // TODO
-			for _, b := range zmsg.Body {
-				log.Printf("\t%s\n", b)
-			}
-		case zmtp.ErrorMessage:
-			if zmsg.Err == io.EOF {
+		zmsg, err := c.zmtp.RecvMsg()
+		if err != nil {
+			if err == io.EOF {
 				c.conn.Close()
 				return
 			}
-			log.Printf("control err msg: %v\n", zmsg.Err)
+			log.Printf("control err msg: %v\n", err)
+			continue
 		}
+		var msg message
+		if err := msg.decode(zmsg.Frames); err != nil {
+			log.Printf("jupyter: control msg: %v", err)
+			continue
+		}
+		s.shellRequest(c, &msg)
 	}
 }
 
 func (s *server) publishIO(typeName string, content interface{}, req *message) error {
-	b, err := replyMessage(typeName, s.key, content, req)
+	msg, err := replyMessage(typeName, s.key, content, req)
 	if err != nil {
 		return err
 	}
@@ -267,7 +249,7 @@ func (s *server) publishIO(typeName string, content interface{}, req *message) e
 	s.mu.Lock()
 	for ch := range s.iopubs {
 		select {
-		case ch <- b:
+		case ch <- msg:
 		default:
 		}
 	}
@@ -280,7 +262,7 @@ func (s *server) iopubHandler(c *conn) {
 	if debug {
 		log.Printf("iopub handler started\n")
 	}
-	ch := make(chan [][]byte, 4)
+	ch := make(chan zmtp.Msg, 4)
 
 	s.mu.Lock()
 	s.iopubs[ch] = struct{}{}
@@ -293,7 +275,7 @@ func (s *server) iopubHandler(c *conn) {
 	}()
 
 	for {
-		if err := c.zmtp.SendMultipart(<-ch); err != nil {
+		if err := c.zmtp.SendMsg(<-ch); err != nil {
 			log.Printf("iopub send failed: %v", err)
 			return
 		}
@@ -475,17 +457,17 @@ func (s *server) kernelInfo(c *conn, req *message) error {
 }
 
 func (s *server) shellReply(c *conn, typeName string, content interface{}, req *message) error {
-	b, err := replyMessage(typeName, s.key, content, req)
+	msg, err := replyMessage(typeName, s.key, content, req)
 	if err != nil {
 		return err
 	}
-	if err := c.zmtp.SendMultipart(b); err != nil {
+	if err := c.zmtp.SendMsg(msg); err != nil {
 		return fmt.Errorf("%s: %v", typeName, err)
 	}
 	return nil
 }
 
-func replyMessage(typeName string, key []byte, content interface{}, req *message) ([][]byte, error) {
+func replyMessage(typeName string, key []byte, content interface{}, req *message) (zmtp.Msg, error) {
 	var rep message
 	rep.Header.ID = newUUID()
 	rep.Header.Username = req.Header.Username
@@ -498,14 +480,14 @@ func replyMessage(typeName string, key []byte, content interface{}, req *message
 
 	parts, err := rep.encode(key)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", typeName, err)
+		return zmtp.Msg{}, fmt.Errorf("%s: %v", typeName, err)
 	}
 
 	var b [][]byte
 	b = append(b, req.IDs...)
 	b = append(b, msgHeader)
 	b = append(b, parts...)
-	return b, nil
+	return zmtp.Msg{Frames: b}, nil
 }
 
 func newUUID() string {
